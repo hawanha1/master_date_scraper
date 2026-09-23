@@ -1,0 +1,13 @@
+# Python 3.10 or newer is required (ddgs needs it).
+# Minimum versions = the versions this script was tested with.
+requests>=2.32
+beautifulsoup4>=4.12
+lxml>=5.0
+curl_cffi>=0.7
+cloudscraper>=1.2.71
+ddgs>=9.0
+deep-translator>=1.11.4
+langdetect>=1.0.9
+pypdf>=4.0
+pandas>=2.0
+openpyxl>=3.1
