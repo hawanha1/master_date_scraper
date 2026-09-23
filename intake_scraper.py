@@ -50,6 +50,7 @@ from deep_translator import GoogleTranslator
 from langdetect import DetectorFactory, detect
 from pypdf import PdfReader
 
+from multilang import month_map, month_regex, native_alternation
 from registry import DEFAULT_REGISTRY, fold, load_registry, match_country, parse_selection
 
 DetectorFactory.seed = 0
@@ -104,6 +105,23 @@ def local_languages(country: str, names: list[str]) -> list[str]:
     return [lang for lang in langs if lang != "en"][:2]
 
 
+LOCAL_PHRASES = {  # search phrases used when translation is unavailable
+    "it": {"application deadline": "scadenza immatricolazioni", "semester start date": "inizio lezioni",
+           "academic calendar": "calendario accademico"},
+    "de": {"application deadline": "Bewerbungsfrist", "semester start date": "Vorlesungsbeginn",
+           "academic calendar": "Semestertermine"},
+    "fr": {"application deadline": "date limite candidature", "semester start date": "rentrée universitaire",
+           "academic calendar": "calendrier universitaire"},
+    "es": {"application deadline": "plazo de preinscripción", "semester start date": "inicio de clases",
+           "academic calendar": "calendario académico"},
+    "pt": {"application deadline": "prazo de candidatura", "semester start date": "início das aulas",
+           "academic calendar": "calendário escolar"},
+    "nl": {"application deadline": "aanmelddeadline", "semester start date": "start academiejaar",
+           "academic calendar": "academische kalender"},
+    "pl": {"application deadline": "rekrutacja terminy", "semester start date": "rozpoczęcie roku akademickiego",
+           "academic calendar": "organizacja roku akademickiego"},
+}
+
 MDY_COUNTRIES = {"united states", "usa", "us", "united states of america", "philippines"}
 
 SKIP_DOMAINS = (
@@ -150,25 +168,25 @@ _MONTH_NAMES = [
     ("june", "jun"), ("july", "jul"), ("august", "aug"), ("september", "sept", "sep"),
     ("october", "oct"), ("november", "nov"), ("december", "dec"),
 ]
-MONTHS = {n: i for i, names in enumerate(_MONTH_NAMES, 1) for n in names}
-MON = (r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?"
-       r"|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?(?![a-z])")
-YEAR = r"(20\d{2})(?!\d)"
-ORD = r"(?:st|nd|rd|th)?"
-RSEP = r"(?:[-–—]|to|until|till|and|through)"
+MONTHS = month_map()          # English + native month names of all registry languages
+MON = month_regex()
+YEAR = r"(?:de\s+|del\s+)?(20\d{2})(?!\d)"      # "1 de octubre de 2025"
+ORD = r"(?:st|nd|rd|th|er|º|°|\.)?"             # "1st", "1er", "1º", "1. Oktober"
+OF = r"(?:of\s+|de\s+|del\s+|di\s+)?"
+RSEP = r"(?:[-–—]|to|until|till|and|through|al|au|bis|a|do|až|és|til)"
 
 DATE_PATTERNS = [  # (name, regex) — order matters, earlier patterns win overlapping spans
-    ("range_dmy", re.compile(rf"\b(\d{{1,2}}){ORD}\s*{RSEP}\s*(\d{{1,2}}){ORD}\s+(?:of\s+)?{MON}\s*,?\s*{YEAR}", re.I)),
-    ("range_dm", re.compile(rf"\b(\d{{1,2}}){ORD}\s*{RSEP}\s*(\d{{1,2}}){ORD}\s+(?:of\s+)?{MON}", re.I)),
-    ("dmy", re.compile(rf"\b(\d{{1,2}}){ORD}\s+(?:of\s+)?{MON}\s*,?\s*{YEAR}", re.I)),
+    ("range_dmy", re.compile(rf"\b(\d{{1,2}}){ORD}\s*{RSEP}\s*(\d{{1,2}}){ORD}\s+{OF}{MON}\s*,?\s*{YEAR}", re.I)),
+    ("range_dm", re.compile(rf"\b(\d{{1,2}}){ORD}\s*{RSEP}\s*(\d{{1,2}}){ORD}\s+{OF}{MON}", re.I)),
+    ("dmy", re.compile(rf"\b(\d{{1,2}}){ORD}\s+{OF}{MON}\s*,?\s*{YEAR}", re.I)),
     ("mdy", re.compile(rf"\b{MON}\s+(\d{{1,2}}){ORD}\s*,?\s*{YEAR}", re.I)),
     ("iso", re.compile(r"\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b")),
     ("num", re.compile(r"\b(\d{1,2})[./-](\d{1,2})[./-](20\d{2})\b")),
     ("my", re.compile(rf"\b{MON}\s*,?\s*{YEAR}", re.I)),
-    ("dm", re.compile(rf"\b(\d{{1,2}}){ORD}\s+(?:of\s+)?{MON}", re.I)),
+    ("dm", re.compile(rf"\b(\d{{1,2}}){ORD}\s+{OF}{MON}", re.I)),
     ("md", re.compile(rf"\b{MON}\s+(\d{{1,2}}){ORD}\b(?!\s*[,.]?\s*\d)", re.I)),
 ]
-RANGE_GAP = re.compile(r"^\s*(?:-|–|—|to|until|till|through|thru|and|bis)\s*$", re.I)
+RANGE_GAP = re.compile(r"^\s*(?:-|–|—|to|until|till|through|thru|and|bis|al|au|a|do|až|til|dal)\s*$", re.I)
 YEAR_RE = re.compile(r"(?<!\d)(20\d{2})(?!\d)")
 
 # Keyword classes used to decide what a date means.
@@ -180,18 +198,21 @@ KW = {
         r"|first day of (?:classes|term|semester|lectures|instruction|school)"
         r"|(?:start|beginning|begin|commencement) of (?:the )?(?:semester|term|trimester|lectures"
         r"|classes|studies|instruction|academic year|lecture period|programme|program|course)"
-        r"|lecture period|teaching period|enrol?ment (?:day|week)|welcome week|entry)\b", re.I),
+        r"|lecture period|teaching period|enrol?ment (?:day|week)|welcome week|entry"
+        rf"|{native_alternation('start')})\b", re.I),
     "deadline": re.compile(
         r"\b(deadlines?|apply by|applications? (?:close|closes|closing|due|must be (?:received|submitted))"
         r"|closing dates?|last (?:date|day) (?:to|for) (?:apply|application|applications|submission|submit)"
         r"|last date|submission (?:deadline|date)|application period ends|apply (?:until|before)"
         r"|applications? (?:\w+ ){0,4}(?:until|by|before|no later than)|no later than|due date"
-        r"|(?:and|applications?|portal|window)\s+close[sd]?|closes? on|closing)\b", re.I),
+        r"|(?:and|applications?|portal|window)\s+close[sd]?|closes? on|closing"
+        rf"|{native_alternation('deadline')})\b", re.I),
     "open": re.compile(
         r"\b(applications? (?:open|opens|start|starts|begin|begins)|application (?:period|window|cycle|portal)"
         r" (?:opens|begins|starts)|opens? for applications|apply from|application start"
         r"|start of (?:the )?application|applications? (?:can|may) be submitted (?:from|as of)"
-        r"|opening dates?)\b", re.I),
+        r"|opening dates?"
+        rf"|{native_alternation('open')})\b", re.I),
 }
 KW_APPL = re.compile(r"\b(appl(?:y|ication|icants?)|admission|submission|register|registration)\b", re.I)
 KW_EXCL = re.compile(
@@ -203,13 +224,15 @@ KW_EXCL = re.compile(
     r"|nominations?|incoming|outgoing|matriculation|enrol?ment deadline|admitted students|waitlist"
     r"|enrol+ in|register for|course (?:selection|registration)|courses? in|drop|add courses?"
     r"|course enrol\w*|enrol\w* (?:period|day|opens|appointments?)|non-enrol\w*|registration for"
-    r"|course changes|resumes?|continues?|continuing|returning students)\b|©", re.I)
+    r"|course changes|resumes?|continues?|continuing|returning students|reply|replied|comments?"
+    rf"|{native_alternation('excl')})\b|©", re.I)
 SNIPPET_PREFIX = re.compile(
     r"^\s*(?:\d+\s+(?:minutes?|hours?|days?|weeks?|months?|years?)\s+ago|[A-Z][a-z]{2,8}\.?\s+\d{1,2},\s+\d{4}"
     r"|\d{1,2}\s+[A-Z][a-z]{2,8}\.?\s+\d{4}|\d{1,2}-[A-Z][a-z]{2}-\d{4}|\d{4}-\d{2}-\d{2})\s*[-·—–]\s*")
 SNIPPET_MID = re.compile(  # "... Sep 14, 2026 · We release ..." (crawl/publish date inside a snippet)
     r"(?:[A-Z][a-z]{2,8}\.?\s+\d{1,2},\s+\d{4}|\d{1,2}\s+[A-Z][a-z]{2,8}\.?\s+\d{4}|\d{1,2}-[A-Z][a-z]{2}-\d{4})\s*·")
-KW_INTAKE_WORDS = re.compile(r"\b(intake|admission|entry|appl\w+|enrol\w*|cohort|new students|freshers?)\b", re.I)
+KW_INTAKE_WORDS = re.compile(r"\b(intake|admission|entry|appl\w+|enrol\w*|cohort|new students|freshers?"
+                             rf"|{native_alternation('intake')})\b", re.I)
 
 # Intake-pattern statements: "two intakes: February and July", "Fall and Spring intakes"
 _TERM = (r"(?:jan(?:uary)?|feb(?:ruary)?|march|april|may|june|july|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?"
@@ -266,6 +289,8 @@ class Intake:
     inferred: bool = False
     found: bool = False
     slot: date | None = None   # nominal month of this intake in the learned pattern
+    est_start: tuple | None = None      # (date, note) when the start date had to be estimated
+    est_deadline: tuple | None = None   # (date, note) when the deadline had to be estimated
 
     @property
     def score(self):
@@ -290,6 +315,9 @@ def http_get(url: str, timeout: int = 20):
     attempts = (
         ("curl_cffi", lambda: creq.get(url, impersonate="chrome", timeout=timeout,
                                        headers=BROWSER_HEADERS, allow_redirects=True)),
+        # some university sites serve broken certificate chains (e.g. poliba.it); we only read them
+        ("curl_cffi-noverify", lambda: creq.get(url, impersonate="chrome", timeout=timeout, verify=False,
+                                                headers=BROWSER_HEADERS, allow_redirects=True)),
         ("cloudscraper", lambda: _scraper.get(url, timeout=timeout, headers=BROWSER_HEADERS)),
     )
     last = "error"
@@ -417,21 +445,45 @@ def detect_lang(text: str) -> str:
 
 
 _tr_cache: dict[str, str] = {}
+_tr_lock = threading.Lock()
+_tr_state = {"last": 0.0, "fails": 0, "off_until": 0.0}
+TR_MIN_INTERVAL = 0.35     # free Google endpoint allows ~5 requests/second in total
 
 
-def translate(text: str, target: str = "en", source: str = "auto") -> str:
+def translate(text: str, target: str = "en", source: str = "auto") -> str | None:
+    """Translated text, or None when translation is unavailable (rate-limited / down).
+
+    Calls are spaced across all threads; after repeated failures translation pauses for a
+    few minutes and pages are read with the native-language rules only.
+    """
     key = f"{source}>{target}:{text}"
     if key in _tr_cache:
         return _tr_cache[key]
-    out = text
-    for attempt in range(2):
+    for attempt in range(3):
+        with _tr_lock:
+            now = time.time()
+            if now < _tr_state["off_until"]:
+                return None
+            wait = _tr_state["last"] + TR_MIN_INTERVAL - now
+            if wait > 0:
+                time.sleep(wait)
+            _tr_state["last"] = time.time()
         try:
-            out = GoogleTranslator(source=source, target=target).translate(text) or text
-            break
-        except Exception:  # noqa: BLE001
-            time.sleep(1.5)
-    _tr_cache[key] = out
-    return out
+            out = GoogleTranslator(source=source, target=target).translate(text)
+            if out:
+                _tr_state["fails"] = 0
+                _tr_cache[key] = out
+                return out
+        except Exception as e:  # noqa: BLE001
+            log.debug("translate failed (%s)", type(e).__name__)
+        _tr_state["fails"] += 1
+        if _tr_state["fails"] >= 6:
+            _tr_state["off_until"] = time.time() + 180
+            _tr_state["fails"] = 0
+            log.info("  translation rate-limited -> native-language parsing only for 3 min")
+            return None
+        time.sleep(2 * (attempt + 1))
+    return None
 
 
 def translate_relevant(text: str, max_chars: int = 14000) -> str:
@@ -455,7 +507,8 @@ def translate_relevant(text: str, max_chars: int = 14000) -> str:
         total += len(ln) + 1
     if cur:
         chunks.append(cur)
-    return "\n".join(translate(c) for c in chunks)
+    parts = [translate(c) for c in chunks]
+    return "\n".join(p for p in parts if p) if any(parts) else None
 
 
 YEAR_CELL = re.compile(r"^(20\d{2})(?:\s*[/–-]\s*(?:20)?\d{2})?$")
@@ -526,8 +579,9 @@ def infer_year(text: str, s: int, e: int, month: int | None, fallback_year):
     return fallback_year
 
 
-def find_dates(text: str, mdy: bool, fallback_year: int | None):
+def find_dates(text: str, mdy: bool, fallback_year: int | None, croatian: bool = False):
     """Yield (start, end, date, precision, range_partner_index|None)."""
+    months = month_map(croatian)     # "listopad" = October in Croatian, November elsewhere
     taken: list[tuple[int, int]] = []
     found = []
 
@@ -542,15 +596,15 @@ def find_dates(text: str, mdy: bool, fallback_year: int | None):
             g = m.groups()
             items = []
             if name in ("range_dmy", "range_dm"):
-                mo = MONTHS.get(g[2].lower().rstrip("."))
+                mo = months.get(g[2].lower().rstrip("."))
                 y = g[3] if name == "range_dmy" else infer_year(text, s, e, mo, fallback_year)
                 if y is None:
                     continue
                 items = [(_mk_date(y, mo, g[0]), "day"), (_mk_date(y, mo, g[1]), "day")]
             elif name == "dmy":
-                items = [(_mk_date(g[2], MONTHS.get(g[1].lower().rstrip(".")), g[0]), "day")]
+                items = [(_mk_date(g[2], months.get(g[1].lower().rstrip(".")), g[0]), "day")]
             elif name == "mdy":
-                items = [(_mk_date(g[2], MONTHS.get(g[0].lower().rstrip(".")), g[1]), "day")]
+                items = [(_mk_date(g[2], months.get(g[0].lower().rstrip(".")), g[1]), "day")]
             elif name == "iso":
                 items = [(_mk_date(g[0], g[1], g[2]), "day")]
             elif name == "num":
@@ -563,10 +617,10 @@ def find_dates(text: str, mdy: bool, fallback_year: int | None):
                     dd, mm = (b, a) if mdy else (a, b)
                 items = [(_mk_date(y, mm, dd), "day")]
             elif name == "my":
-                items = [(_mk_date(g[1], MONTHS.get(g[0].lower().rstrip(".")), 1), "month")]
+                items = [(_mk_date(g[1], months.get(g[0].lower().rstrip(".")), 1), "month")]
             elif name in ("dm", "md"):
                 day, mon = (g[0], g[1]) if name == "dm" else (g[1], g[0])
-                mo = MONTHS.get(mon.lower().rstrip("."))
+                mo = months.get(mon.lower().rstrip("."))
                 y = infer_year(text, s, e, mo, fallback_year)
                 if y is None:
                     continue
@@ -659,15 +713,17 @@ def extract_pattern(text: str, url: str, source_type: str, weight: float, na: bo
 
 
 def extract_candidates(text: str, url: str, source_type: str, weight: float,
-                       mdy: bool, translated: bool, na: bool = False) -> list[Candidate]:
+                       mdy: bool, translated: bool, na: bool = False, croatian: bool = False) -> list[Candidate]:
     out = extract_pattern(text, url, source_type, weight, na)
     years = [int(y) for y in YEAR_RE.findall(text) if TODAY.year - 3 <= int(y) <= TODAY.year + 2]
     dominant = Counter(years).most_common(1)[0][0] if years else None
-    for s, e, d, prec, rng in find_dates(text, mdy, dominant):
+    for s, e, d, prec, rng in find_dates(text, mdy, dominant, croatian):
         if not (TODAY.year - 3 <= d.year <= TODAY.year + 2) or abs((d - TODAY).days) <= 1:
             continue  # out of range, or "today" (page-generated / crawl date)
         before = text[max(0, s - 140):s]
         after = text[e:e + 70]
+        if re.match(r"\s*,?\s*at\s+\d{1,2}:\d{2}\s*(?:am|pm)", after, re.I):
+            continue  # "December 6, 2024 at 11:16 pm" = a comment/post timestamp
         scores = {k: _kw_score(before, after, rx) for k, rx in KW.items()}
         kind, (sc, kpos) = max(scores.items(), key=lambda kv: kv[1][0])
         if sc < 0.22:
@@ -725,6 +781,14 @@ def near_intake_words(context: str) -> bool:
     before, _, rest = context.partition("【")
     after = rest.partition("】")[2]
     return bool(KW_INTAKE_WORDS.search(before[-45:] + " " + after[:25]))
+
+
+MAX_LEAD_DAYS = 300  # an application deadline / opening is never further ahead of the start than this
+
+
+def plausible_lead(d: date, start: date) -> bool:
+    """A deadline or opening date must fall before the intake starts, and not absurdly early."""
+    return 0 < (start - d).days <= MAX_LEAD_DAYS
 
 
 def dedupe(cands: list[Candidate]) -> list[Candidate]:
@@ -825,6 +889,19 @@ def build_intakes(cands: list[Candidate]) -> tuple[list[Intake], bool]:
         it.found = True
 
     # 3. attach deadlines / opening dates to the intake they belong to
+    by_start = sorted(cells, key=lambda it: it.start)
+
+    def just_after_start(d: date) -> bool:
+        """Enrolment still closing a few weeks/months after an intake began ("chiusura
+        iscrizioni" in November for a September start) belongs to THAT intake - it is not
+        an application deadline for the next one."""
+        prev = next((it for it in reversed(by_start) if it.start <= d), None)
+        if prev is None:
+            return False
+        nxt = next((it for it in by_start if it.start > d), None)
+        gap = (nxt.start - prev.start).days if nxt else 365
+        return (d - prev.start).days <= min(120, 0.35 * gap)
+
     for c in cands:
         if c.kind not in ("deadline", "open"):
             continue
@@ -836,7 +913,9 @@ def build_intakes(cands: list[Candidate]) -> tuple[list[Intake], bool]:
             if target is None:
                 continue  # labelled for an intake this university doesn't seem to have
         else:
-            options = [it for it in cells if 0 <= (it.start - c.date).days <= 300]
+            if c.kind == "deadline" and just_after_start(c.date):
+                continue
+            options = [it for it in cells if 0 <= (it.start - c.date).days <= MAX_LEAD_DAYS]
             target = min(options, key=lambda it: (it.start - c.date).days, default=None)
         if target is not None and c.date <= target.start:
             (target.deadlines if c.kind == "deadline" else target.opens).append(c)
@@ -845,6 +924,9 @@ def build_intakes(cands: list[Candidate]) -> tuple[list[Intake], bool]:
         for c in it.deadlines:
             if (it.start - c.date).days < 30:
                 c.score = round(c.score * 0.35, 3)
+        if it.deadlines:  # applications can't open after they close
+            (last, _), _, _ = best_date(it.deadlines)
+            it.opens = [c for c in it.opens if c.date <= last]
     return cells, len(slots) >= 2
 
 
@@ -869,24 +951,70 @@ def fmt_date(d: date | None, precision: str = "day") -> str:
 
 
 def classify(cells: list[Intake], multi: bool) -> list[tuple[str, Intake | None]]:
-    """Pick Previous / Current / Next cells relative to today."""
+    """Label intakes relative to today.
+
+    Current  = the intake starting nearest to today (within ~4 months), else the upcoming one.
+    Previous = EVERY intake of the year before the current one (1 for a one-intake university,
+               all of them - e.g. October + April - for multi-intake universities).
+    Next     = the intake after the current one.
+    """
     if not cells:
-        labels = ["Previous-2", "Previous-1"] if multi else ["Previous"]
-        return [(lbl, None) for lbl in labels + ["Current", "Next"]]
+        return [("Previous", None), ("Current", None), ("Next", None)]
     cells = sorted(cells, key=lambda it: it.start)
-    # current = the intake starting nearest to today (within ~4 months), else the upcoming one
     near = [i for i, it in enumerate(cells) if abs((it.start - TODAY).days) <= 120]
     if near:
         cur = min(near, key=lambda i: abs((cells[i].start - TODAY).days))
     else:
         cur = next((i for i, it in enumerate(cells) if it.start > TODAY), len(cells) - 1)
-    n_prev = 2 if multi else 1
-    labels = ["Previous-2", "Previous-1"] if multi else ["Previous"]
-    prev = [cells[i] if i >= 0 else None for i in range(cur - n_prev, cur)]
-    rows = list(zip(labels, prev))
+    anchor = cells[cur].slot or cells[cur].start
+    prev = [it for it in cells[:cur] if (anchor - (it.slot or it.start)).days <= 366]
+    if not prev and cur > 0:
+        prev = [cells[cur - 1]]
+    labels = ["Previous"] if len(prev) <= 1 else [f"Previous-{n}" for n in range(len(prev), 0, -1)]
+    rows = list(zip(labels, prev or [None]))
     rows.append(("Current", cells[cur]))
     rows.append(("Next", cells[cur + 1] if cur + 1 < len(cells) else None))
     return rows
+
+
+def has_start(it: Intake | None) -> bool:
+    return bool(it) and it.start_precision == "day"
+
+
+def has_deadline(it: Intake | None) -> bool:
+    return bool(it) and bool(it.deadlines)
+
+
+def _shift_year(d: date, years: int, keep_weekday: bool) -> date:
+    try:
+        nd = d.replace(year=d.year + years)
+    except ValueError:            # 29 Feb
+        nd = d.replace(year=d.year + years, day=28)
+    if keep_weekday:              # semesters start on the same weekday (usually Monday)
+        diff = (d.weekday() - nd.weekday() + 7) % 7
+        nd = nd + timedelta(days=diff if diff <= 3 else diff - 7)
+    return nd
+
+
+def estimate_from_other_years(cells: list[Intake], it: Intake):
+    """Fill it.est_start / it.est_deadline from the same intake in the closest other year."""
+    same_slot = [c for c in cells if c is not it and c.slot and it.slot and c.slot.month == it.slot.month]
+    same_slot.sort(key=lambda c: abs(c.slot.year - it.slot.year))
+    if not has_start(it):
+        src = next((c for c in same_slot if has_start(c)), None)
+        if src:
+            d = _shift_year(src.start, it.slot.year - src.slot.year, keep_weekday=True)
+            it.est_start = (d, f"Estimated from {src.slot.year} intake (started {src.start:%Y-%m-%d})")
+        elif it.start_precision == "month":
+            it.est_start = (it.start, "Month from sources; day assumed 1st")
+    if not has_deadline(it):
+        src = next((c for c in same_slot if has_deadline(c)), None)
+        if src:
+            (sd, _), _, _ = best_date(src.deadlines)
+            d = _shift_year(sd, it.slot.year - src.slot.year, keep_weekday=False)
+            start = it.start if has_start(it) else it.est_start[0] if it.est_start else None
+            if start is None or plausible_lead(d, start):
+                it.est_deadline = (d, f"Estimated from {src.slot.year} intake (deadline {sd:%Y-%m-%d})")
 
 
 # --------------------------------------------------------------------------- #
@@ -903,6 +1031,7 @@ class UniversityScraper:
         self.langs = local_languages(self.country, self.aliases)
         self.mdy = self.country.lower() in MDY_COUNTRIES
         self.na = self.mdy or self.country.lower() == "canada"
+        self.croatian = self.country.lower() == "croatia"
         self.acronym = acronym or "".join(w[0] for w in re.findall(r"[A-Za-z]+", self.uni)
                                           if w.lower() not in {"of", "the", "and", "for", "de", "at"}).upper()
         self.official: str | None = None
@@ -933,7 +1062,8 @@ class UniversityScraper:
         phrases = ["application deadline", "semester start date", "academic calendar"]
         yy = y - 1 if second_pass else y
         for i, lang in enumerate(self.langs):
-            local = [translate(p, target=lang, source="en") for p in phrases[: 3 if i == 0 else 1]]
+            local = [translate(p, target=lang, source="en") or LOCAL_PHRASES.get(lang, {}).get(p)
+                     for p in phrases[: 3 if i == 0 else 1]]
             q += [f"{u} {p} {yy}" for p in local if p]
         return q
 
@@ -966,7 +1096,7 @@ class UniversityScraper:
                 if body and (self.is_official(href) or mentions_university(title + " " + body, self.aliases, self.acronym)):
                     w = 0.8 if self.is_official(href) else 0.5
                     snip = extract_candidates(title + "\n" + body, href, "search-snippet",
-                                              w, self.mdy, False, self.na)
+                                              w, self.mdy, False, self.na, self.croatian)
                     if not self.is_official(href) and not mentions_university(title, self.aliases, self.acronym):
                         snip = [c for c in snip if c.kind != "pattern"]
                     self.cands += snip
@@ -1009,9 +1139,12 @@ class UniversityScraper:
         text = annotate_table_years(text)
         work_text, translated = text, False
         if lang != "en":
-            work_text = translate_relevant(text)
-            translated = rec["Translated"] = True
-            title = translate(title) if title else title
+            eng = translate_relevant(text)
+            if eng:
+                # original first (native-language rules), English translation after it
+                work_text, translated = text + "\n" + eng, True
+                title = (translate(title) or title) if title else title
+            rec["Translated"] = translated
         if not official and not mentions_university(title + "\n" + text + "\n" + work_text,
                                                     self.aliases, self.acronym):
             rec["Status"] = "skipped (page not about this university)"
@@ -1027,7 +1160,7 @@ class UniversityScraper:
         if ADMIN_PATH.search(path):  # census / exam / fee calendars list term dates, not intakes
             w *= 0.4
         cands = extract_candidates(work_text, final if "wayback" not in rec["Method"] else url,
-                                   stype, w, self.mdy, translated, self.na)
+                                   stype, w, self.mdy, translated, self.na, self.croatian)
         if not official and not mentions_university(title, self.aliases, self.acronym):
             # a generic "Intakes in France" article describes the country, not this university
             cands = [c for c in cands if c.kind != "pattern"]
@@ -1047,6 +1180,57 @@ class UniversityScraper:
                 self.cands += cands
                 log.info("  %-28s %3d dates  %s", rec["Status"][:28], len(cands), futs[f][:90])
 
+    def gap_queries(self, gaps: list[Intake]) -> list[str]:
+        """Searches aimed at one specific past intake (its academic year / month)."""
+        q = []
+        for it in gaps:
+            y = it.slot.year
+            ay = f"{y}/{y + 1}" if it.slot.month >= 7 else f"{y - 1}/{y}"
+            ay_dash = ay.replace("/", "-")
+            if not has_start(it):
+                q += [f"{self.uni} academic calendar {ay}", f"{self.uni} {ay_dash} lectures start date"]
+            if not has_deadline(it):
+                q += [f"{self.uni} {it.slot:%B} {y} intake application deadline",
+                      f"{self.uni} admission deadline {ay}"]
+            if self.official:
+                q.append(f"site:{self.official} {ay_dash}")
+            for lang in self.langs:
+                for phrase in ("academic calendar", "application deadline"):
+                    local = translate(phrase, target=lang, source="en") or LOCAL_PHRASES.get(lang, {}).get(phrase)
+                    if local:
+                        q.append(f"{self.uni} {local} {ay}")
+        return list(dict.fromkeys(q))
+
+    def fill_previous_gaps(self, cells: list[Intake], multi: bool, rows) -> tuple[list[Intake], bool, list]:
+        """Previous intakes must have a start date AND a deadline: targeted search, then
+        archived official pages from that season, then estimation from other years."""
+        def gaps_of(rows):
+            return [it for lbl, it in rows if lbl.startswith("Previous") and it
+                    and not (has_start(it) and has_deadline(it))]
+
+        gaps = gaps_of(rows)
+        if gaps:
+            log.info("  previous intake(s) incomplete (%s) -> targeted search",
+                     ", ".join(intake_name(g) for g in gaps))
+            urls = self.gather_urls(self.gap_queries(gaps))
+            self.crawl([u for u, _ in urls])
+            cells, multi = build_intakes(self.cands)
+            rows = classify(cells, multi)
+            gaps = gaps_of(rows)
+        if gaps and self.official:
+            log.info("  still incomplete -> archived official pages from that season")
+            dated = [s["URL"] for s in self.sources if s.get("Dates found") and self.is_official(s["URL"])]
+            targets = list(dict.fromkeys(dated))[:4] + [f"https://www.{self.official}/"]
+            for it in gaps:
+                for ts in {it.slot - timedelta(days=150), it.slot - timedelta(days=20)}:
+                    self.crawl(targets, archive_ts=ts)
+            cells, multi = build_intakes(self.cands)
+            rows = classify(cells, multi)
+        for lbl, it in rows:
+            if lbl.startswith("Previous") and it and not (has_start(it) and has_deadline(it)):
+                estimate_from_other_years(cells, it)
+        return cells, multi, rows
+
     def run(self) -> dict:
         log.info("=== %s (%s) ===", self.uni, self.country)
         self.official = find_official_domain(self.aliases, self.country)
@@ -1061,7 +1245,6 @@ class UniversityScraper:
             log.info("  no previous intake yet -> second pass (last year's dates + web archive)")
             urls2 = self.gather_urls(self.queries(second_pass=True))
             self.crawl([u for u, _ in urls2])
-            # archived copies (≈1 year old) of official pages that contained dates
             dated_official = [s["URL"] for s in self.sources
                               if s.get("Dates found") and self.is_official(s["URL"])][:6]
             if dated_official:
@@ -1069,6 +1252,7 @@ class UniversityScraper:
             cells, multi = build_intakes(self.cands)
             rows = classify(cells, multi)
 
+        cells, multi, rows = self.fill_previous_gaps(cells, multi, rows)
         return {"rows": rows, "multi": multi}
 
 
@@ -1076,53 +1260,160 @@ class UniversityScraper:
 # Excel output
 # --------------------------------------------------------------------------- #
 def intake_name(it: Intake) -> str:
-    return (it.slot or it.start).strftime("%B %Y") + " intake"
+    d = it.start if it.found and it.start_precision in ("day", "month") else (it.slot or it.start)
+    return d.strftime("%B %Y") + " intake"
+
+
+SOURCE_LABEL = {"official": "Scraped - official site", "official-archive": "Scraped - official site (archived)",
+                "third-party": "Scraped - third-party site", "search-snippet": "Scraped - search result"}
+
+
+def _winner_source(cands: list[Candidate], d: date) -> str:
+    best = max((c for c in cands if c.date == d), key=lambda c: c.score, default=None)
+    return SOURCE_LABEL.get(best.source_type, "Scraped") if best else ""
 
 
 def to_rows(country: str, uni: str, official: str | None, result: dict, meta: dict | None = None):
     long_rows = []
+    n_prev = sum(1 for lbl, _ in result["rows"] if lbl.startswith("Previous"))
     for label, it in result["rows"]:
         base = {"Country": country, "University": uni, **(meta or {}), "Official Website": official or "",
-                "Intake Pattern": "Multiple intakes/year" if result["multi"] else "Single intake/year",
+                "Intake Pattern": "Multiple intakes/year" if n_prev > 1 or result["multi"] else "Single intake/year",
                 "Intake Category": label}
-        if it is None or not it.found:
-            upcoming = it is not None and it.start > TODAY
-            status = "Not announced yet" if upcoming or (it is None and label == "Next") else "Not found"
-            long_rows.append({**base, "Intake": intake_name(it) if it else "", "Intake Start Date": "",
-                              "Application Opens": "",
-                              "Application Deadline": "", "Other Deadlines Seen": "",
-                              "Confidence": "", "Status": status, "Sources": ""})
+        empty = {"Intake": intake_name(it) if it else "", "Intake Start Date": "", "Start Date Source": "",
+                 "Application Opens": "", "Application Deadline": "", "Deadline Source": "",
+                 "Other Deadlines Seen": "", "Confidence": "", "Sources": ""}
+        is_prev = label.startswith("Previous")
+        if it is None or (not it.found and not it.est_start and not it.est_deadline):
+            upcoming = (it is not None and it.start > TODAY) or (it is None and label == "Next")
+            long_rows.append({**base, **empty, "Status": "Not announced yet" if upcoming else "Not found"})
             continue
-        dl, dl_score, dl_other = best_date(it.deadlines)
-        op, _, _ = best_date(it.opens)
+        row = {**base, **empty, "Intake": intake_name(it)}
+        # start date
+        if it.start_precision == "day":
+            row["Intake Start Date"] = fmt_date(it.start)
+            row["Start Date Source"] = _winner_source(it.cands, it.start)
+        elif is_prev and it.est_start:
+            row["Intake Start Date"], row["Start Date Source"] = fmt_date(it.est_start[0]), it.est_start[1]
+        elif it.start_precision == "month":
+            row["Intake Start Date"] = fmt_date(it.start, "month")
+            row["Start Date Source"] = _winner_source(it.cands, it.start) + " (month only)"
+        # deadline: only dates that fit before the start shown on this row
+        start = (it.start if it.start_precision == "day"
+                 else it.est_start[0] if is_prev and it.est_start else None)
+        dl, _, dl_other = best_date([c for c in it.deadlines if start is None or plausible_lead(c.date, start)])
+        if dl:
+            row["Application Deadline"] = fmt_date(*dl)
+            row["Deadline Source"] = _winner_source(it.deadlines, dl[0])
+            row["Other Deadlines Seen"] = ", ".join(dl_other)
+        elif is_prev and it.est_deadline and (start is None or plausible_lead(it.est_deadline[0], start)):
+            row["Application Deadline"], row["Deadline Source"] = fmt_date(it.est_deadline[0]), it.est_deadline[1]
+            dl = (it.est_deadline[0], "day")
+        op, _, _ = best_date([c for c in it.opens if (dl is None or c.date <= dl[0])
+                              and (start is None or plausible_lead(c.date, start))])
+        row["Application Opens"] = fmt_date(*op) if op else ""
         total = it.score if it.start_precision != "nominal" else sum(c.score for c in it.deadlines)
-        conf = "High" if total >= 3 else "Medium" if total >= 1.2 else "Low"
-        notes = []
-        if it.start_precision == "nominal":
-            notes.append("start date not found")
-        elif it.inferred:
-            notes.append("start month inferred from intake label")
-        if not dl:
-            notes.append("deadline not found")
+        row["Confidence"] = "High" if total >= 3 else "Medium" if total >= 1.2 else "Low"
+        row["Status"] = row_status(row, is_prev)
         all_c = sorted(it.cands + it.deadlines + it.opens, key=lambda c: -c.score)
         srcs = list(dict.fromkeys(c.url for c in all_c if c.source_type.startswith("official")))
         srcs += [u for u in dict.fromkeys(c.url for c in all_c) if u not in srcs]
-        long_rows.append({
-            **base,
-            "Intake": intake_name(it),
-            "Intake Start Date": fmt_date(it.start, it.start_precision),
-            "Application Opens": fmt_date(*op) if op else "",
-            "Application Deadline": fmt_date(*dl) if dl else "",
-            "Other Deadlines Seen": ", ".join(dl_other),
-            "Confidence": conf,
-            "Status": "Found" + (f" ({'; '.join(notes)})" if notes else ""),
-            "Sources": "\n".join(srcs[:5]),
-        })
+        row["Sources"] = "\n".join(srcs[:5])
+        long_rows.append(row)
     return long_rows
 
 
+def row_status(row: dict, is_prev: bool) -> str:
+    start, dl = row["Intake Start Date"], row["Application Deadline"]
+    est = [k for k, src in (("start", row["Start Date Source"]), ("deadline", row["Deadline Source"]))
+           if str(src).startswith(("Estimated", "Month from"))]
+    if start and dl and "month only" not in str(start):
+        return "Complete" + (f" (estimated: {', '.join(est)})" if est else "")
+    missing = [k for k, v in (("start date", start and "month only" not in str(start)), ("deadline", dl)) if not v]
+    return ("INCOMPLETE - " if is_prev else "Found - ") + " and ".join(missing) + " not found"
+
+
+def fill_from_peers(rows: list[dict]) -> list[dict]:
+    """Last resort for previous intakes: use other universities of the same country (scraped
+    values only) for a start date / deadline that is still empty. Recomputed at every save."""
+    out = [dict(r) for r in rows]
+    for r in out:  # drop earlier peer estimates, they are recomputed from the current data
+        for col, src in (("Intake Start Date", "Start Date Source"), ("Application Deadline", "Deadline Source")):
+            if str(r.get(src, "")).startswith(("Estimated from other", "Estimated - ")):
+                r[col], r[src] = "", ""
+    month_no = {m: i for i, m in enumerate(["January", "February", "March", "April", "May", "June", "July",
+                                            "August", "September", "October", "November", "December"], 1)}
+
+    def usable(src: str) -> bool:  # scraped, or estimated from the same university's other year
+        return src.startswith("Scraped") or re.match(r"Estimated from \d{4} intake", src) is not None
+    for r in out:
+        if not str(r.get("Intake Category", "")).startswith("Previous"):
+            continue
+        if not r.get("Intake"):  # no intake found at all: take the country's usual previous intake
+            names = Counter(str(p["Intake"]) for p in out if p["Country"] == r["Country"] and p is not r
+                            and str(p.get("Intake Category", "")).startswith("Previous") and p.get("Intake"))
+            if not names:
+                continue
+            r["Intake"] = names.most_common(1)[0][0]
+        mon = month_no.get(str(r["Intake"]).split()[0], 0)
+        group = [p for p in out if p is not r and p["Country"] == r["Country"] and p.get("Intake")
+                 and str(p.get("Intake Category", "")).startswith("Previous")
+                 and abs(month_no.get(str(p["Intake"]).split()[0], 99) - mon) <= 1]
+        year = int(str(r["Intake"]).split()[1])
+        is_day = lambda v: re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(v)) is not None  # noqa: E731
+
+        def from_peers(col: str, src: str, ok=lambda d: True):
+            val = str(r.get(col, ""))
+            if val and "month only" not in val:
+                return
+            vals = []
+            for p in group:
+                pv, ps = str(p.get(col, "")), str(p.get(src, ""))
+                if usable(ps) and is_day(pv):
+                    d = _shift_year(date.fromisoformat(pv), year - int(str(p["Intake"]).split()[1]),
+                                    col == "Intake Start Date")
+                    if ok(d):
+                        vals.append(d)
+            if vals:
+                vals.sort()
+                r[col] = vals[len(vals) // 2].isoformat()
+                r[src] = f"Estimated from other {r['Country']} universities (median of {len(vals)})"
+
+        # 1. start date: peers, then (only when nothing else exists) a calendar rule, clearly labelled.
+        #    A deadline still on the row is the university's own, so an estimated start must fit it.
+        own_dl = date.fromisoformat(str(r["Application Deadline"])) if is_day(r.get("Application Deadline")) else None
+        fits = lambda d: own_dl is None or plausible_lead(own_dl, d)  # noqa: E731
+        from_peers("Intake Start Date", "Start Date Source", ok=fits)
+        if not is_day(r.get("Intake Start Date", "")):
+            first = date(year, mon or 9, 1)
+            first += timedelta(days=(7 - first.weekday()) % 7)
+            if fits(first):
+                r["Intake Start Date"] = first.isoformat()
+                r["Start Date Source"] = "Estimated - first Monday of the intake month (no source found)"
+        if not is_day(r.get("Intake Start Date", "")):
+            r["Status"] = row_status(r, True)
+            continue
+        start = date.fromisoformat(str(r["Intake Start Date"]))
+        # 2. deadline: must fall before that start (and not absurdly early)
+        from_peers("Application Deadline", "Deadline Source", ok=lambda d: plausible_lead(d, start))
+        if not str(r.get("Application Deadline", "")):
+            gaps = [(date.fromisoformat(str(p["Intake Start Date"])) - date.fromisoformat(str(p["Application Deadline"]))).days
+                    for p in out if p["Country"] == r["Country"] and usable(str(p.get("Start Date Source", "")))
+                    and usable(str(p.get("Deadline Source", "")))
+                    and is_day(p.get("Application Deadline", "")) and is_day(p.get("Intake Start Date", ""))]
+            gaps = sorted(g for g in gaps if 0 < g <= MAX_LEAD_DAYS) or [90]
+            gap = gaps[len(gaps) // 2]
+            r["Application Deadline"] = (start - timedelta(days=gap)).isoformat()
+            r["Deadline Source"] = f"Estimated - typical gap of {gap} days before start in {r['Country']} (no source found)"
+        op = str(r.get("Application Opens", ""))
+        if is_day(op) and date.fromisoformat(op) > date.fromisoformat(str(r["Application Deadline"])):
+            r["Application Opens"] = ""
+        r["Status"] = row_status(r, True)
+    return out
+
+
 def write_excel(path: str, long_rows: list[dict], evidence: list[dict], sources: list[dict]):
-    df = pd.DataFrame(long_rows)
+    df = pd.DataFrame(fill_from_peers(long_rows))
     summary = []
     for (country, uni), g in df.groupby(["Country", "University"], sort=False):
         row = {"Country": country, "University": uni,
@@ -1137,8 +1428,11 @@ def write_excel(path: str, long_rows: list[dict], evidence: list[dict], sources:
                 row[f"{cat} Deadline"] = r["Application Deadline"] or "not found"
             else:
                 row[f"{cat} Intake"] = r["Status"]
-        row["Previous intake captured?"] = "YES" if any(
-            str(c).startswith("Previous") and i for c, i in zip(g["Intake Category"], g["Intake"])) else "NO"
+        prev = g[g["Intake Category"].astype(str).str.startswith("Previous")]
+        complete = len(prev) > 0 and all(str(x).startswith("Complete") for x in prev["Status"])
+        some_est = any("estimated" in str(x) for x in prev["Status"])
+        row["Previous intakes complete (start + deadline)?"] = (
+            ("YES (partly estimated)" if some_est else "YES") if complete else "NO")
         summary.append(row)
 
     with pd.ExcelWriter(path, engine="openpyxl") as xw:
@@ -1263,10 +1557,10 @@ def scrape_one(j: dict, max_pages: int) -> tuple[list[dict], list[dict], list[di
                  "Translated": c.translated, "URL": c.url, "Context": c.context}
                 for c in sorted(s.cands, key=lambda c: (c.kind, c.date))]
     for r in rows:
-        log.info("  -> %s | %-10s %-22s start=%-12s deadline=%s", j["name"][:30], r["Intake Category"],
-                 r["Intake"], r["Intake Start Date"], r["Application Deadline"] or r["Status"])
-    return rows, evidence, s.sources, any(str(r["Intake Category"]).startswith("Previous") and
-                                          str(r["Status"]).startswith("Found") for r in rows)
+        log.info("  -> %s | %-10s %-22s start=%-12s deadline=%-12s %s", j["name"][:30], r["Intake Category"],
+                 r["Intake"], r["Intake Start Date"], r["Application Deadline"], r["Status"])
+    prev = [r for r in rows if str(r["Intake Category"]).startswith("Previous")]
+    return rows, evidence, s.sources, bool(prev) and all(str(r["Status"]).startswith("Complete") for r in prev)
 
 
 def main():
@@ -1305,7 +1599,20 @@ def main():
                              if len(countries) == 1 else "intake_dates.xlsx")
 
     long_rows, evidence, sources = ([], [], []) if args.fresh else load_previous(output)
-    done = {(str(r.get("Country")), str(r.get("University"))) for r in long_rows}
+    # a university counts as done only if something was found for it; failed / empty ones
+    # (e.g. a crash or a network outage) are dropped and scraped again
+    # (values estimated from OTHER universities don't count - they're filled in for crashed ones too)
+    found_any = {(str(r.get("Country")), str(r.get("University"))) for r in long_rows
+                 if any(re.match(r"Scraped|Month from|Estimated from \d{4} intake", str(r.get(k, "")))
+                        for k in ("Start Date Source", "Deadline Source"))}
+    retry = {(str(r.get("Country")), str(r.get("University"))) for r in long_rows} - found_any
+    if retry:
+        long_rows = [r for r in long_rows if (str(r.get("Country")), str(r.get("University"))) not in retry]
+        evidence = [r for r in evidence if (str(r.get("Country")), str(r.get("University"))) not in retry]
+        sources = [r for r in sources if str(r.get("University")) not in {u for _, u in retry}]
+        print(f"\nRetrying {len(retry)} universit{'y' if len(retry) == 1 else 'ies'} with no results last time: "
+              + ", ".join(u for _, u in sorted(retry)))
+    done = found_any
     todo = [j for j in jobs if (j["country"], j["name"]) not in done]
     if len(todo) < len(jobs):
         print(f"\nResuming {output}: {len(jobs) - len(todo)} already done, {len(todo)} to go "
@@ -1363,7 +1670,7 @@ def main():
     if unsaved:
         output = output.replace(".xlsx", f"_backup_{int(time.time())}.xlsx")
         write_excel(output, long_rows, evidence, sources)
-    print(f"\nSaved {output}: previous intake captured for {captured}/{len(todo)} universities this run.")
+    print(f"\nSaved {output}: previous intake(s) complete from this university's own sources for {captured}/{len(todo)} universities; the rest are filled from other {countries[0] if len(countries) == 1 else 'same-country'} universities where possible (see the Summary sheet).")
 
 
 if __name__ == "__main__":

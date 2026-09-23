@@ -8,13 +8,31 @@ Results go into an Excel file with, for every intake:
 - **Application opening date** (when available)
 - **Application deadline** (last date to apply)
 
-| University type | Intakes reported |
+| Category | Which intakes |
 |---|---|
-| One intake a year | Previous, Current, Next |
-| Several intakes a year | Previous-2, Previous-1, Current, Next |
+| **Previous** | **Every** intake of the year that has just gone by (12 months before the current intake). One intake a year gives 1 row; e.g. October + April gives Previous-2 and Previous-1 |
+| **Current** | The intake starting nearest to today (within about 4 months) |
+| **Next** | The intake after the current one |
 
-At minimum it always tries to capture the **previous** intake. If the first pass doesn't find it, a second pass
-searches for last year's dates and archived (Wayback Machine) copies of the official pages.
+**Must-have rule:** every *previous* intake always gets **both** a start date and an application deadline. The script works down this list until both are filled:
+
+1. Scraped from the official site, third-party sites or search results (normal pass)
+2. Second pass: last year's dates, plus archived (Wayback Machine) official pages
+3. Targeted search for that specific academic year, in English and the local language (e.g. `calendario accademico 2025/2026`), plus archived official pages from that season
+4. Estimated from the **same university's** same intake in another year (weekday-aligned)
+5. Estimated from **other universities of the same country** (median), for the same intake month
+6. Last resort: first Monday of the intake month / the country's typical gap between deadline and start
+
+**Consistency rules** (a date that breaks them is dropped, whatever step produced it):
+
+- the application deadline is always *before* the intake start, and at most ~10 months before it
+- the application opening date is always on or before the deadline
+- enrolment that is still closing shortly *after* an intake has begun (e.g. "chiusura iscrizioni" in
+  November for a September start) belongs to that intake. It is never used as a deadline for next year's intake
+- an estimated start date is chosen so that it fits the university's own scraped deadline
+
+The *Start Date Source* and *Deadline Source* columns say which step produced each date, so you can always
+tell a scraped date from an estimate (and filter estimates out if you need to).
 
 Everything it uses is free: no API keys, no accounts, no paid services.
 
@@ -310,12 +328,22 @@ Values you'll see in **Status**:
 
 | Status | Meaning |
 |---|---|
-| `Found` | Start date and deadline were found |
-| `Found (deadline not found)` | Start date found, no deadline |
-| `Found (start date not found)` | Deadline found, start date not |
-| `Found (start month inferred from intake label)` | e.g. only "Fall 2026" was stated, not an exact day |
-| `Not found` | A past or current intake whose dates weren't found |
+| `Complete` | Start date and deadline both scraped |
+| `Complete (estimated: start)` / `(estimated: deadline)` | Both present; the named one is an estimate (see its *Source* column) |
+| `Found - start date not found` | Current / next intake: only the deadline was found |
+| `INCOMPLETE - …` | A previous intake still missing a date (only happens when nothing at all is known for the country yet; fills in as more universities are scraped) |
+| `Not found` | Current intake whose dates weren't found |
 | `Not announced yet` | A future intake that isn't published yet (normal) |
+
+Values of *Start Date Source* / *Deadline Source*:
+
+| Value | Meaning |
+|---|---|
+| `Scraped - official site` / `(archived)` | From the university's website (or its Wayback Machine copy) |
+| `Scraped - third-party site` / `search result` | From another website, or a search-engine snippet |
+| `Estimated from 2026 intake (…)` | Same university, same intake, another year, shifted to this year |
+| `Estimated from other Italy universities (median of N)` | Peers in the same country; recalculated on every save as more universities finish |
+| `Estimated - …(no source found)` | Last-resort calendar rule |
 
 A date written as `2026-09 (month only)` means the sources only gave the month.
 
@@ -327,6 +355,7 @@ A date written as `2026-09 (month only)` means the sources only gave the month.
   ```
   Resuming intake_dates_Germany.xlsx: 40 already done, 52 to go (use --fresh to redo them)
   ```
+- Universities that **failed or found nothing** last time (a crash, a network outage) are **retried automatically** on resume.
 - **Redo everything** (for example a month later, for fresh dates) with `--fresh`, or give a new output name with `-o`.
 - If the output file is **open in Excel** while the script saves (Windows locks it), the script warns you and retries.
   Close the file and it catches up. If it's still locked at the end, the results go to `…_backup_<time>.xlsx`.
@@ -401,6 +430,8 @@ and the skipped row is printed, e.g. `Paris-Panthéon-Assas University` = `Unive
 | Official site has a bot check / Cloudflare | Real-Chrome fingerprint (`curl_cffi`), then `cloudscraper`, then the Wayback Machine copy. If all fail, it uses third-party sites that republish the dates (DAAD, Shiksha, Yocket, LeverageEdu, …) |
 | Page blocked but the search result isn't | Dates in search-result snippets are used too, at lower weight |
 | Search engine rate-limits | Falls back through several free engines |
+| Translation rate-limited (free Google endpoint allows ~5 requests/s) | Dates and keywords are read **natively** in all registry languages (month names incl. declensions: `29 settembre 2025`, `1. Oktober`, `1 października`, `22. září`; keywords like *inizio lezioni*, *scadenza*, *Bewerbungsfrist*, *rentrée*). Translation is spaced out and paused automatically when blocked |
+| Broken SSL certificate on a university site | Retried without certificate verification (read-only) |
 | Non-English sites | Also searches in the local language (Belgium: Dutch + French, Switzerland: German / French / Italian, chosen from the university's own name). Detects each page's language and translates the date lines to English |
 | Dates only in PDF calendars | Read with `pypdf` |
 | Calendar tables with the year only in the header (`2026 \| 2027 \| 2028`) | Each cell inherits its column's year |
