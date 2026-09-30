@@ -1,0 +1,11 @@
+# Python 3.10+
+curl_cffi>=0.7
+cloudscraper>=1.2.71
+requests>=2.32
+beautifulsoup4>=4.12
+lxml>=5.0
+pypdf>=4.0
+openpyxl>=3.1
+ddgs>=9.0          # free meta-search: search-index fallback (nightly) + website lookup (build_sheets.py)
+patchright>=1.40   # stealth browser fallback; after install run: .venv/bin/patchright install chromium
+nodriver>=0.50     # preferred browser fallback, runs headed (cron gives it a virtual screen via xvfb-run)

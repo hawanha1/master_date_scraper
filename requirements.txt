@@ -7,6 +7,7 @@ curl_cffi>=0.7
 cloudscraper>=1.2.71
 ddgs>=9.0
 deep-translator>=1.11.4
+dateparser>=1.2         # month names in 23 languages (multilang.py)
 langdetect>=1.0.9
 pypdf>=4.0
 pandas>=2.0

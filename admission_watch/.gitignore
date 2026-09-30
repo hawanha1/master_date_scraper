@@ -1,0 +1,7 @@
+.venv/
+config.env
+logs/
+reports/
+__pycache__/
+browser_state/
+*.state.json
